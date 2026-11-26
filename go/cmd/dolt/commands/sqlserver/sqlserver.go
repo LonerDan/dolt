@@ -16,6 +16,7 @@ package sqlserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
@@ -370,7 +372,17 @@ func StartServer(ctx context.Context, versionStr, commandStr string, args []stri
 
 	engineVars := sqle.NewEngineVariables()
 
-	cli.Printf("Starting server with Config %v\n", servercfg.ConfigInfo(serverConfig))
+	// In json log format a bare text banner would break JSON-lines consumers.
+	// This runs BEFORE Serve()'s InitLogging configures the logrus formatter,
+	// so emit logrus-shaped JSON ourselves. In text mode keep the historical
+	// banner.
+	if strings.ToLower(string(serverConfig.LogFormat())) != string(servercfg.LogFormat_JSON) {
+		cli.Printf("Starting server with Config %v\n", servercfg.ConfigInfo(serverConfig))
+	} else {
+		cfgJSON, _ := json.Marshal(servercfg.ConfigInfo(serverConfig))
+		fmt.Fprintf(cli.CliErr, "{\"level\":\"info\",\"msg\":\"starting server\",\"time\":\"%s\",\"config\":%s}\n",
+			time.Now().Format(time.RFC3339), cfgJSON)
+	}
 
 	// Build MCP config if any MCP-related options are present
 	var mcpCfg *MCPConfig
