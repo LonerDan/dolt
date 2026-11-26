@@ -87,6 +87,7 @@ type Config struct {
 	Version                 string
 	Controller              *svcs.Controller
 	ProtocolListenerFactory server.ProtocolListenerFunc
+	SocketActivation        bool
 	MCP                     *MCPConfig
 
 	// ProviderFactory controls how the DatabaseProvider is instantiated
@@ -289,7 +290,7 @@ func ConfigureServices(
 	var serverConf server.Config
 	LoadServerConfig := &svcs.AnonService{
 		InitF: func(context.Context) (err error) {
-			serverConf, err = getConfigFromServerConfigWithVariables(cfg.ServerConfig, cfg.ProtocolListenerFactory, cfg.EngineVariables)
+			serverConf, err = getConfigFromServerConfigWithVariables(cfg.ServerConfig, cfg.ProtocolListenerFactory, cfg.EngineVariables, cfg.SocketActivation)
 			return err
 		},
 	}
@@ -1273,10 +1274,24 @@ func newSessionBuilder(se *engine.SqlEngine, config servercfg.ServerConfig) serv
 }
 
 // getConfigFromServerConfig processes ServerConfig and returns server.Config for sql-server.
-func getConfigFromServerConfigWithVariables(serverConfig servercfg.ServerConfig, plf server.ProtocolListenerFunc, vars *sql.EngineVariables) (server.Config, error) {
-	serverConf, err := handleProtocolAndAddress(serverConfig)
-	if err != nil {
-		return server.Config{}, err
+func getConfigFromServerConfigWithVariables(serverConfig servercfg.ServerConfig, plf server.ProtocolListenerFunc, vars *sql.EngineVariables, socketActivation bool) (server.Config, error) {
+	var serverConf server.Config
+	if socketActivation {
+		// Socket activation: no listener is bound by dolt. The pre-bound
+		// listening socket arrives via LISTEN_FDS and is passed to the
+		// server via Config.Listener, so go-mysql-server skips binding
+		// its own listener entirely.
+		lis, err := systemdActivatedListener()
+		if err != nil {
+			return server.Config{}, err
+		}
+		serverConf = server.Config{Listener: lis}
+	} else {
+		var err error
+		serverConf, err = handleProtocolAndAddress(serverConfig)
+		if err != nil {
+			return server.Config{}, err
+		}
 	}
 
 	serverConf.DisableClientMultiStatements = serverConfig.DisableClientMultiStatements()

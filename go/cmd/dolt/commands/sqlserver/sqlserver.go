@@ -52,6 +52,7 @@ const (
 	maxWaitConsTimeoutFlag      = "max-connections-timeout"
 	allowCleartextPasswordsFlag = "allow-cleartext-passwords"
 	socketFlag                  = "socket"
+	socketActivationFlag        = "socket-activation"
 	remotesapiPortFlag          = "remotesapi-port"
 	remotesapiReadOnlyFlag      = "remotesapi-readonly"
 	goldenMysqlConn             = "golden"
@@ -210,6 +211,7 @@ func (cmd SqlServerCmd) ArgParserWithName(name string) *argparser.ArgParser {
 	ap.SupportsString(commands.BranchCtrlPathFlag, "", "branch control file", "Path to a file to load and store branch control permissions. Defaults to `$doltcfg-dir/branch_control.db`. Will be created as needed.")
 	ap.SupportsString(allowCleartextPasswordsFlag, "", "allow-cleartext-passwords", "Allows use of cleartext passwords. Defaults to false.")
 	ap.SupportsOptionalString(socketFlag, "", "socket file", "Path for the unix socket file. Defaults to '/tmp/mysql.sock'.")
+	ap.SupportsFlag(socketActivationFlag, "", "Systemd socket activation: serve on the listening socket passed via LISTEN_FDS instead of binding a TCP/unix socket. Requires LISTEN_PID and LISTEN_FDS to be set.")
 	ap.SupportsUint(remotesapiPortFlag, "", "remotesapi port", "Sets the port for a server which can expose the databases in this sql-server over remotesapi, so that clients can clone or pull from this server.")
 	ap.SupportsFlag(remotesapiReadOnlyFlag, "", "Disable writes to the sql-server via the push operations. SQL writes are unaffected by this setting.")
 	ap.SupportsString(goldenMysqlConn, "", "mysql connection string", "Provides a connection string to a MySQL instance to be used to validate query results")
@@ -359,6 +361,7 @@ func StartServer(ctx context.Context, versionStr, commandStr string, args []stri
 	}
 
 	skipRootUserInitialization := apr.Contains(skipRootUserInitialization)
+	socketActivation := apr.Contains(socketActivationFlag)
 
 	startError, closeError := Serve(ctx, &Config{
 		EngineVariables:  engineVars,
@@ -367,6 +370,7 @@ func StartServer(ctx context.Context, versionStr, commandStr string, args []stri
 		Controller:       controller,
 		DoltEnv:          dEnv,
 		SkipRootUserInit: skipRootUserInitialization,
+		SocketActivation: socketActivation,
 		MCP:              mcpCfg,
 	})
 	if startError != nil {
