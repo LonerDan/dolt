@@ -18,9 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
@@ -46,6 +48,7 @@ const (
 	logFormatFlag               = "logformat"
 	noAutoCommitFlag            = "no-auto-commit"
 	configFileFlag              = "config"
+	configStdinFlag             = "config-stdin"
 	queryParallelismFlag        = "query-parallelism"
 	maxConnectionsFlag          = "max-connections"
 	maxWaitConnectionsFlag      = "back-log"
@@ -188,6 +191,7 @@ func (cmd SqlServerCmd) ArgParserWithName(name string) *argparser.ArgParser {
 
 	ap := argparser.NewArgParserWithVariableArgs(name)
 	ap.SupportsString(configFileFlag, "", "file", "When provided configuration is taken from the yaml config file and all command line parameters are ignored.")
+	ap.SupportsFlag(configStdinFlag, "", "Read the yaml configuration from stdin instead of a file. Like --config, all other command line parameters are ignored (except --socket-activation). Useful for supervising processes that want to configure the server without materializing a config file on disk.")
 	ap.SupportsString(hostFlag, "H", "host address", fmt.Sprintf("Defines the host address that the server will run on. Defaults to `%v`.", serverConfig.Host()))
 	ap.SupportsUint(portFlag, "P", "port", fmt.Sprintf("Defines the port that the server will run on. Defaults to `%v`.", serverConfig.Port()))
 	// TODO: After December 2025, remove the deprecated user/password arguments completely from the command line
@@ -265,7 +269,26 @@ func (cmd SqlServerCmd) Exec(ctx context.Context, commandStr string, args []stri
 	return 0
 }
 
+// stdinConfig caching: the yaml config passed via --config-stdin is consumed
+// once per process, but two code paths need it (GetDataDirPreStart runs early
+// in dolt.go before StartServer) — read exactly once and reuse.
+var (
+	stdinConfigOnce sync.Once
+	stdinConfigData []byte
+	stdinConfigErr  error
+)
+
+func readStdinConfigData() ([]byte, error) {
+	stdinConfigOnce.Do(func() {
+		stdinConfigData, stdinConfigErr = io.ReadAll(os.Stdin)
+	})
+	return stdinConfigData, stdinConfigErr
+}
+
 func validateSqlServerArgs(apr *argparser.ArgParseResults) error {
+	if apr.Contains(configFileFlag) && apr.Contains(configStdinFlag) {
+		return fmt.Errorf("error: --config and --config-stdin are mutually exclusive")
+	}
 	if apr.NArg() > 0 {
 		args := strings.Join(apr.Args, ", ")
 		return fmt.Errorf("error: sql-server does not take positional arguments, but found %d: %s", apr.NArg(), args)
@@ -423,6 +446,22 @@ func GetDataDirPreStart(fs filesys.Filesys, args []string) (string, error) {
 				return "", err
 			}
 		}
+	} else if apr.Contains(configStdinFlag) {
+		data, err := readStdinConfigData()
+		if err != nil {
+			return "", fmt.Errorf("Failed to read yaml config from stdin. Error: %s", err.Error())
+		}
+		cfg, err := servercfg.YamlConfigFromBytes(data)
+		if err != nil {
+			return "", err
+		}
+
+		if cfg.DataDir() != "" {
+			cfgDataDir, err = fs.Abs(cfg.DataDir())
+			if err != nil {
+				return "", err
+			}
+		}
 	}
 
 	if cfgDataDir != "" && cliDataDir != "" {
@@ -475,6 +514,31 @@ func ServerConfigFromArgsWithReader(
 // on command line. Server config variables not defined are set to default values.
 func getServerConfig(cwdFS filesys.Filesys, apr *argparser.ArgParseResults, dataDirOverride string, reader ServerConfigReader) (servercfg.ServerConfig, error) {
 	cfgFile, ok := apr.GetValue(configFileFlag)
+	if apr.Contains(configStdinFlag) {
+		data, err := readStdinConfigData()
+		if err != nil {
+			return nil, fmt.Errorf("Failed to read yaml config from stdin. Error: %s", err.Error())
+		}
+
+		cfg, err := servercfg.YamlConfigFromBytes(data)
+		if err != nil {
+			return nil, err
+		}
+
+		if connStr, ok := apr.GetValue(goldenMysqlConn); ok {
+			if yamlCfg, ok := cfg.(servercfg.YAMLConfig); ok {
+				cli.Println(connStr)
+				yamlCfg.GoldenMysqlConn = &connStr
+			}
+		}
+
+		if cfg.UserIsSpecified() {
+			logrus.Warn("user and password are no longer supported in sql-server configuration files." +
+				"Use CREATE USER and GRANT statements to manage user accounts.")
+		}
+
+		return cfg, nil
+	}
 	if !ok {
 		return reader.ReadConfigArgs(apr, dataDirOverride)
 	}
@@ -534,6 +598,9 @@ func GetClientConfig(cwdFS filesys.Filesys, creds *cli.UserPassword, apr *argpar
 // setupDoltConfig updates the given server config with where to create .doltcfg directory
 func setupDoltConfig(dEnv *env.DoltEnv, cwd filesys.Filesys, apr *argparser.ArgParseResults, config servercfg.ServerConfig) error {
 	if _, ok := apr.GetValue(configFileFlag); ok {
+		return nil
+	}
+	if apr.Contains(configStdinFlag) {
 		return nil
 	}
 
@@ -636,7 +703,7 @@ func generateYamlConfigIfNone(
 
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
-	if apr.Contains(configFileFlag) {
+	if apr.Contains(configFileFlag) || apr.Contains(configStdinFlag) {
 		return nil
 	}
 

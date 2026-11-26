@@ -194,14 +194,22 @@ func YamlConfigFromFile(fs filesys.Filesys, path string) (ServerConfig, error) {
 		return nil, fmt.Errorf("Failed to read file '%s'. Error: %s", path, err.Error())
 	}
 
-	data, err = interpolateEnv(data)
+	return YamlConfigFromBytes(data)
+}
+
+// YamlConfigFromBytes returns server config variables with values defined in
+// the yaml |data|, e.g. read from stdin via the `--config-stdin` flag. Uses
+// the same semantics as YamlConfigFromFile, including environment variable
+// interpolation.
+func YamlConfigFromBytes(data []byte) (ServerConfig, error) {
+	data, err := interpolateEnv(data)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to interpolate environment variables in yaml file '%s'. Error: %s", path, err.Error())
+		return nil, fmt.Errorf("Failed to interpolate environment variables in yaml config. Error: %s", err.Error())
 	}
 
 	cfg, err := NewYamlConfig(data)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse yaml file '%s'. Error: %s", path, err.Error())
+		return nil, fmt.Errorf("Failed to parse yaml config. Error: %s", err.Error())
 	}
 
 	return cfg, nil
